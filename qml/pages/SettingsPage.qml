@@ -55,7 +55,7 @@ FocusScope {
         }
     }
 
-    function restoreLocation(saved) {
+    function restoreLocation(saved, takeFocus) {
         if (!saved)
             return
         finishRowEdit()
@@ -65,7 +65,7 @@ FocusScope {
         searchQuery = saved.query
         expandedGroups = saved.expanded
         revealedRowKey = saved.revealedRowKey
-        reconcileSettingsRows(rebuildVisibleRows(), saved.rowKey, true)
+        reconcileSettingsRows(rebuildVisibleRows(), saved.rowKey, takeFocus !== false)
         // Incremental reconciliation can move ListView's content origin while
         // retaining the result delegate. Raw contentY belongs to the old model.
         settingsList.contentY = settingsList.originY + saved.scrollOffset
@@ -74,13 +74,32 @@ FocusScope {
     function openSearch() {
         if (modalVisible || editingKey.length || inputCompositionActive())
             return false
-        if (pageMode !== "search")
-            priorSearchLocation = location()
-        searchResultLocation = null
-        pageMode = "search"
-        refreshSettingsFilter(true)
-        Qt.callLater(searchField.focusField)
+        searchField.focusField()
         return true
+    }
+
+    // The field is always on screen; what it holds decides the mode. The
+    // first character leaves the page it was typed over for results, and
+    // emptying it puts that page back without taking the caret away.
+    function setSearchQuery(text) {
+        if (!text.length) {
+            if (pageMode !== "search")
+                return
+            const saved = priorSearchLocation
+            priorSearchLocation = null
+            searchResultLocation = null
+            restoreLocation(saved, false)
+            return
+        }
+        if (pageMode !== "search") {
+            finishRowEdit()
+            navigationMode = "row"
+            priorSearchLocation = location()
+            pageMode = "search"
+        }
+        searchResultLocation = null
+        searchQuery = text
+        refreshSettingsFilter(true)
     }
 
     function openCategory(id, rowKey) {
@@ -281,7 +300,6 @@ FocusScope {
             }
         }
         if (pageMode === "index") {
-            visibleRows.push(descriptor("action/searchSettings", -2, false, false))
             visibleRows.push(descriptor("action/zoom", -1, false, false))
             for (let index = 0; index < SettingsNavigation.categories.length; ++index)
                 visibleRows.push(descriptor("action/category/" + SettingsNavigation.categories[index].id, index, false,
@@ -319,12 +337,6 @@ FocusScope {
             "description": "",
             "type": "action",
             "destination": "category"
-        }
-        rowMap["action/searchSettings"] = {
-            "key": "action/searchSettings",
-            "title": "Search settings",
-            "description": "Find any setting by name, value or keyword",
-            "type": "index"
         }
         rowMap["action/zoom"] = {
             "key": "action/zoom",
@@ -689,9 +701,7 @@ FocusScope {
             return
         selectRow(index, false)
         if (row.type === "index") {
-            if (row.key === "action/searchSettings")
-                openSearch()
-            else if (row.key === "action/zoom")
+            if (row.key === "action/zoom")
                 openCategory("appearance", "appearance/uiScalePercent")
             else
                 openCategory(row.categoryId, "")
@@ -873,31 +883,42 @@ FocusScope {
         const focused = root.Window.window ? root.Window.window.activeFocusItem : null
         if (inputCompositionActive())
             return false
-        if (searchButton.activeFocus || backButton.activeFocus) {
+        if (backButton.activeFocus) {
             if (action === "activate")
-                return searchButton.activeFocus ? openSearch() : back()
+                return back()
             if (action === "down") {
                 InputKeys.focus(settingsList)
                 return true
             }
-            if (action === "left" && backButton.visible) {
-                InputKeys.focus(backButton)
-                return true
-            }
             if (action === "right") {
-                InputKeys.focus(searchButton)
+                searchField.focusRow()
                 return true
             }
             if (action === "up" && shell) {
                 shell.focusNavBar()
                 return true
             }
-            return false
+            return action === "left"
         }
-        if (pageMode === "search" && (searchField.activeFocus || searchField.editing)) {
+        if (searchField.activeFocus || searchField.editing) {
+            // Resting on the row (TV): Select opens the keyboard. Typing in
+            // it: Select or Down hands the results to the D-pad.
+            if (action === "activate" && !searchField.editing) {
+                searchField.focusField()
+                return true
+            }
             if (action === "down" || action === "activate") {
                 Qt.inputMethod.hide()
                 InputKeys.focus(settingsList)
+                return true
+            }
+            if (action === "up" && shell) {
+                Qt.inputMethod.hide()
+                shell.focusNavBar()
+                return true
+            }
+            if (action === "left" && !searchField.editing && backButton.visible) {
+                InputKeys.focus(backButton)
                 return true
             }
             return false
@@ -1115,30 +1136,27 @@ FocusScope {
                 id: backButton
                 text: "Back"
                 visible: root.pageMode !== "index"
-                width: Math.min(Metrics.scaled(100), Math.max(0, (parent.width - parent.spacing) / 2))
+                width: visible ? Math.min(Metrics.scaled(100), Math.max(0, (parent.width - parent.spacing) / 2)) : 0
+                height: searchField.height
                 onClicked: root.back()
             }
-            ActionButton {
-                id: searchButton
-                text: "Search"
-                width: Math.min(Metrics.scaled(120), Math.max(0, (parent.width - parent.spacing) / 2))
-                onClicked: root.openSearch()
-            }
-        }
-        TextFieldRow {
-            id: searchField
-            width: parent.width
-            visible: root.pageMode === "search"
-            label: "Search settings"
-            placeholderText: "Name, value or keyword (for example zoom)"
-            text: root.searchQuery
-            onTextEdited: text => {
-                root.searchQuery = text
-                root.refreshSettingsFilter(true)
-            }
-            onAccepted: {
-                Qt.inputMethod.hide()
-                InputKeys.focus(settingsList)
+            TextFieldRow {
+                id: searchField
+                width: Math.max(0, parent.width - (backButton.visible ? backButton.width + parent.spacing : 0))
+                implicitHeight: Metrics.scaled(56)
+                iconName: "search"
+                accessibleName: "Search settings"
+                placeholderText: "Search settings by name, value or keyword"
+                inputMethodHints: Qt.ImhNoPredictiveText | Qt.ImhNoAutoUppercase
+                enterKeyType: Qt.EnterKeySearch
+                // A search result opened in context is not a search page; the
+                // query comes back with the results on Back.
+                text: root.pageMode === "search" ? root.searchQuery : ""
+                onTextEdited: text => root.setSearchQuery(text)
+                onAccepted: {
+                    Qt.inputMethod.hide()
+                    InputKeys.focus(settingsList)
+                }
             }
         }
         SecondaryText {
@@ -1181,12 +1199,7 @@ FocusScope {
                                                                                                currentIndex).rowKey : ""
         }
         onAccepted: index => root.routeAction("activate")
-        onEdgeUp: {
-            if (root.pageMode === "search")
-                searchField.focusRow()
-            else
-                InputKeys.focus(searchButton)
-        }
+        onEdgeUp: searchField.focusRow()
         delegate: Column {
             id: settingsDelegate
             required property int index
