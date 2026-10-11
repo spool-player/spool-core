@@ -31,7 +31,9 @@ FocusScope {
                                                                 ? SettingsNavigation.categoryTitle(categoryId) :
                                                                   "Settings"
     readonly property bool modalVisible: certificateManagerVisible || choiceDialogVisible || diagnosticsExportVisible
-                                         || mpvFolderDialogVisible
+                                         || mpvFolderDialogVisible || homeProvidersVisible
+    property bool homeProvidersVisible: false
+    property Item homeProvidersAnchor: null
     property bool mpvFolderDialogVisible: false
     onModalVisibleChanged: if (!modalVisible && rowsBuilt)
                                Qt.callLater(function () {
@@ -522,6 +524,8 @@ FocusScope {
                                            "Manage downloads and play saved files offline"
         if (row.key === "action/downloadDestination" || row.key === "action/mobileDownloadDestination")
             return Downloads.destination + " · Applies only to new downloads"
+        if (row.key === "home/hiddenProviderIds")
+            return "Choose which providers fill Home"
         if (row.key === "action/accounts") {
             const count = Providers.accounts.length
             return count === 1 ? "1 account" : count + " accounts"
@@ -584,6 +588,12 @@ FocusScope {
         if (row.key === "action/clearLatencyStatistics" || row.key === "action/clearLogs")
             return "Clear"
 
+        if (row.key === "home/hiddenProviderIds") {
+            const choices = Home.providerChoices
+            const shown = choices.filter(choice => choice.shown).length
+            return !Home.providerFilterActive || shown === choices.length ? "All" : shown + " of " + choices.length
+        }
+
         if (row.key === "about/version")
             return "v" + Qt.application.version
         if (row.key === "about/locale")
@@ -592,10 +602,6 @@ FocusScope {
     }
 
     function rowOptions(row) {
-        if (row.key === "home/providerId")
-            return Home.providerChoices.map(function (choice) {
-                return choice.name + (choice.version ? " · " + choice.version : "")
-            })
         if (row.key === "i18n/locale") {
             const result = []
             for (let index = 0; index < I18n.availableLocales.length; ++index)
@@ -617,10 +623,6 @@ FocusScope {
     }
 
     function rowChoiceValues(row) {
-        if (row.key === "home/providerId")
-            return Home.providerChoices.map(function (choice) {
-                return choice.id
-            })
         if (row.key === "i18n/locale")
             return I18n.availableLocales
         if (row.key === "subtitles/language" || row.key === "audio/language")
@@ -749,7 +751,10 @@ FocusScope {
                 shell.openDownloads("", settingsList, true)
             else if (row.key === "action/manageCertificates")
                 certificateManagerVisible = true
-            else if (row.key === "action/clearLatencyStatistics")
+            else if (row.key === "home/hiddenProviderIds") {
+                homeProvidersAnchor = rowControlAt(index)
+                homeProvidersVisible = true
+            } else if (row.key === "action/clearLatencyStatistics")
                 InputLatency.clearStatistics()
             else if (row.key === "action/clearLogs")
                 App.clearLogs()
@@ -827,7 +832,19 @@ FocusScope {
             Qt.callLater(choiceDialog.completePresentation)
     }
 
+    function closeHomeProviders() {
+        homeProvidersVisible = false
+        homeProvidersAnchor = null
+        Qt.callLater(function () {
+            selectRow(currentIndex, true)
+        })
+    }
+
     function back() {
+        if (homeProvidersVisible) {
+            closeHomeProviders()
+            return true
+        }
         if (diagnosticsExportVisible) {
             if (diagnosticsExportLoader.item)
                 diagnosticsExportLoader.item.back()
@@ -995,6 +1012,11 @@ FocusScope {
                                                       repeat)
         if (certificateManagerVisible)
             return certificateManagerLoader.item.routeKey(key, phase, repeat)
+        if (homeProvidersVisible) {
+            if (InputKeys.isBack(key, false, false))
+                return false
+            return homeProvidersLoader.item ? homeProvidersLoader.item.routeKey(key, phase, repeat) : true
+        }
         if (diagnosticsExportVisible)
             return diagnosticsExportLoader.item.routeKey(key, phase, repeat)
         if (mpvFolderDialogVisible)
@@ -1017,6 +1039,11 @@ FocusScope {
     }
 
     function activate() {
+        if (homeProvidersVisible) {
+            if (homeProvidersLoader.item)
+                homeProvidersLoader.item.activate()
+            return
+        }
         if (diagnosticsExportVisible) {
             if (diagnosticsExportLoader.item)
                 diagnosticsExportLoader.item.activate()
@@ -1323,6 +1350,7 @@ FocusScope {
             }
             options: row ? root.rowOptions(row) : []
             currentIndex: row ? root.rowCurrentIndex(row) : 0
+            expanded: root.choiceDialogVisible && root.choiceDialogRow === row
             onSelected: (index, value) => root.setRowChoice(row, index)
         }
     }
@@ -1531,6 +1559,17 @@ FocusScope {
                 root.certificateManagerVisible = false
                 InputKeys.focus(settingsList)
             }
+        }
+    }
+
+    Loader {
+        id: homeProvidersLoader
+        anchors.fill: parent
+        active: root.homeProvidersVisible
+        z: 200
+        sourceComponent: HomeProviderPicker {
+            anchorItem: root.homeProvidersAnchor
+            onDismissed: root.closeHomeProviders()
         }
     }
 
